@@ -1,0 +1,105 @@
+name: CI/CD - Microservicio Node.js + Redis desplegado en EC2
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+env:
+  IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/demo-microservice-lab
+  APP_PORT: ${{ secrets.APP_PORT || 3000 }}
+
+jobs:
+  ci:
+    name: Integración continua (build & push)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+
+    steps:
+      - name: Obtener código fuente
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Instalar dependencias
+        run: npm install
+
+      # - name: Ejecutar pruebas
+      #   run: npm test
+
+      - name: Iniciar sesión en DockerHub
+        run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+
+      - name: Construir imagen Docker
+        run: docker build -t $IMAGE_NAME:latest .
+
+      - name: Subir imagen a DockerHub
+        run: docker push $IMAGE_NAME:latest
+
+  cd:
+    name: Despliegue automático en EC2 (app + redis)
+    runs-on: ubuntu-latest
+    needs: [ci]
+
+    steps:
+      - name: Obtener código fuente
+        uses: actions/checkout@v4
+
+      - name: Instalar cliente SSH
+        run: sudo apt-get update && sudo apt-get install -y openssh-client
+
+      - name: Cargar clave privada en ssh-agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
+
+      - name: Registrar host remoto
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -T 10 -H "$EC2_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Copiar docker-compose.yml al servidor
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          scp -o StrictHostKeyChecking=no app/docker-compose.yml ec2-user@"$EC2_HOST":/home/ec2-user/
+
+      - name: Modificar docker-compose.yml y desplegar
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/demo-microservice-lab:latest
+        run: |
+          ssh -o StrictHostKeyChecking=no ec2-user@"$EC2_HOST" "IMAGE='$IMAGE' bash -s" << 'EOF'
+          set -eux
+          cd /home/ec2-user
+
+          sudo systemctl start docker || sudo service docker start
+          
+          # Instalar docker-compose si no existe o está corrupto
+          if ! command -v docker-compose &> /dev/null || ! docker-compose --version &> /dev/null; then
+            echo "Instalando docker-compose..."
+            sudo curl -SL "https://github.com/docker/compose/releases/download/v2.24.0/docker-compose-linux-x86_64" \
+              -o /usr/local/bin/docker-compose
+            sudo chmod +x /usr/local/bin/docker-compose
+            sudo ln -sf /usr/local/bin/docker-compose /usr/bin/docker-compose
+          fi
+          
+          docker-compose --version
+          
+          sed -i "s|build: \.|image: $IMAGE|g" docker-compose.yml
+          
+          docker-compose pull || true
+          docker-compose down || true
+          docker-compose up -d
+          
+          echo "Despliegue completado"
+          docker-compose ps
+          EOF

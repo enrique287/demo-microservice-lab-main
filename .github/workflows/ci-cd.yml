@@ -1,3 +1,4 @@
+# Nombre del workflow
 name: CI/CD - Microservicio Node.js + Redis desplegado en EC2
 
 on:
@@ -17,7 +18,19 @@ jobs:
     defaults:
       run:
         working-directory: app
-
+    
+    # Agregar servicios de Redis
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    
     steps:
       - name: Obtener código fuente
         uses: actions/checkout@v4
@@ -30,8 +43,38 @@ jobs:
       - name: Instalar dependencias
         run: npm install
 
-      # - name: Ejecutar pruebas
-      #   run: npm test
+      - name: Esperar a que Redis esté listo en localhost:6379
+        run: |
+          for i in $(seq 1 30); do
+            if nc -z 127.0.0.1 6379; then
+              echo "Redis reachable!"
+              break
+            fi
+            echo "Esperando por Redis... intento $i/30"
+            sleep 1
+          done
+          if ! nc -z 127.0.0.1 6379; then
+            echo "Redis no respondió en 30s" >&2
+            exit 1
+          fi
+      
+      - name: ver REDIS env y puertos
+        run: |
+          echo "REDIS_URL='$REDIS_URL'"
+          echo "REDIS_HOST='$REDIS_HOST' REDIS_PORT='$REDIS_PORT'"
+          ss -ltn || true
+          # probar conexión con redis-cli si existe
+          if command -v redis-cli >/dev/null 2>&1; then
+            redis-cli -h 127.0.0.1 -p 6379 ping || true
+          fi
+
+      - name: Ejecutar pruebas
+        env:
+          # Fuerza la URL para que la app use localhost en el runner
+          REDIS_URL: "redis://127.0.0.1:6379"
+          REDIS_HOST: 127.0.0.1
+          REDIS_PORT: 6379
+        run: npm test
 
       - name: Iniciar sesión en DockerHub
         run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin

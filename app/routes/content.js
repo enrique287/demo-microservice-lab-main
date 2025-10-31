@@ -7,13 +7,13 @@ const { findContents, addContent, destroyContent } = require('../controllers/Con
 const router = Router();
 
 /**
- *  @GET /api/contents
+ *  @GET /contents
  *  Listar todos los contenidos
  */
 router.get('/', findContents);
 
 /**
- *  @POST /api/contents
+ *  @POST /contents
  *  Agregar nuevo contenido
  */
 router.post('/', [
@@ -22,7 +22,7 @@ router.post('/', [
 ], addContent);
 
 /**
- *  @DELETE /api/contents/:id
+ *  @DELETE /contents/:id
  *  Eliminar un contenido
  */
 router.delete('/:id', destroyContent);
